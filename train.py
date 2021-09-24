@@ -371,7 +371,9 @@ def main():
 
     for param in model.parameters():
         param.requires_grad = False
-    model.head.requires_grad = True
+
+    for param in model.head.parameters():
+        param.requires_grad = True
 
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
@@ -419,8 +421,9 @@ def main():
 
     optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
-    optimizer.params = filter(lambda p: p.requires_args, model.parameters())
-
+    optimizer.params = filter(lambda p: p.requires_grad, model.parameters())
+    print(list(optimizer.params))
+    
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
     loss_scaler = None
