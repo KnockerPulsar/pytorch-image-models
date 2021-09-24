@@ -368,6 +368,11 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint)
+
+    for param in model.parameters():
+        param.requires_grad = False
+    model.head.requires_grad = True
+
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -413,6 +418,8 @@ def main():
         model = torch.jit.script(model)
 
     optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
+
+    optimizer.params = filter(lambda p: p.requires_args, model.parameters())
 
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
