@@ -389,7 +389,7 @@ def main():
         else:
             print("The given 1 and 0's array's length does not match the number of blocks in the model, `requires_grad = default` (True) for all blocks")
 
-    if args.frozen_head:
+    if args.frozen_head == True:
         print("Freezing head layer")
         for param in model.head.parameters():
             param.requires_grad = not args.frozen_head
