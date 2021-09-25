@@ -393,6 +393,8 @@ def main():
         print("Freezing head layer")
         for param in model.head.parameters():
             param.requires_grad = not args.frozen_head
+    else:
+        print("Classification head not frozen")
 
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
