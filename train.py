@@ -288,6 +288,11 @@ parser.add_argument('--torchscript', dest='torchscript', action='store_true',
 parser.add_argument('--log-wandb', action='store_true', default=False,
                     help='log training and validation metrics to wandb')
 
+# Freezing arguments
+# Probably vit specific for now
+parser.add_argument('--frozen-head', type=bool, default=False, help="Whether to freeze the last layer or not (default: false)")
+parser.add_argument('--frozen-blocks', type=str, default='', help="Which blocks to freeze, a comma seperated list (with no spaces) of 1's and 0's. Where 1 is a frozen block and 0 is not. Note that if you pass it, make sure its length is the same as the number of blocks (default: '')")
+
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -369,11 +374,25 @@ def main():
         scriptable=args.torchscript,
         checkpoint_path=args.initial_checkpoint)
 
-    for param in model.parameters():
-        param.requires_grad = False
+    # Loop over every block and set its parameters to be frozen (not require a gradient)
+    # If the correponding number in the input string is 1.
+    if args.frozen_blocks != '':
+        split = args.frozen_blocks.split(",")
+        if len(model.blocks) == len(split):
+            frozen = [ not bool(int(x)) for x in split]
+            print(split)
+            print(frozen)
+            for i,(frozen_block,block) in enumerate(zip(frozen,model.blocks)):
+                print(f'Status of all of block[{i}].requires_grad: {frozen_block}')
+                for param in block.parameters():
+                    param.requires_grad = frozen_block
+        else:
+            print("The given 1 and 0's array's length does not match the number of blocks in the model, `requires_grad = default` (True) for all blocks")
 
-    for param in model.head.parameters():
-        param.requires_grad = True
+    if args.frozen_head:
+        print("Freezing head layer")
+        for param in model.head.parameters():
+            param.requires_grad = not args.frozen_head
 
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
@@ -422,7 +441,6 @@ def main():
     optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
     optimizer.params = filter(lambda p: p.requires_grad, model.parameters())
-    print(list(optimizer.params))
     
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
