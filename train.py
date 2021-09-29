@@ -15,7 +15,9 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
 import argparse
+from genericpath import isdir
 import time
+from typing import Dict, List, Set
 import yaml
 import os
 import logging
@@ -292,6 +294,7 @@ parser.add_argument('--log-wandb', action='store_true', default=False,
 # Probably vit specific for now
 parser.add_argument('--frozen-head', type=bool, default=False, help="Whether to freeze the last layer or not (default: false)")
 parser.add_argument('--frozen-blocks', type=str, default='', help="Which blocks to freeze, a comma seperated list (with no spaces) of 1's and 0's. Where 1 is a frozen block and 0 is not. Note that if you pass it, make sure its length is the same as the number of blocks (default: '')")
+parser.add_argument('--acc-per-video', type=bool, default=False, help="Whether to calculate accuracy over a frame or over the whole video")
 
 
 def _parse_args():
@@ -601,12 +604,18 @@ def main():
     train_loss_fn = train_loss_fn.cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
 
+
+
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
     best_metric = None
     best_epoch = None
     saver = None
     output_dir = None
+
+    val_path = args.dataset+"val" if args.dataset[-1]==os.path.sep else args.dataset+os.path.sep+"val"
+    pattern_to_video = cache_video_frames(val_path)
+
     if args.rank == 0:
         if args.experiment:
             exp_name = args.experiment
@@ -639,7 +648,13 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            if args.acc_per_video == False:
+                eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            else: 
+                # Given a frame's name up to the char F, it will return a cached result of the video's label
+                cached_videos = {} 
+                eval_metric = validate_video(model, loader_eval, validate_loss_fn, args, cached_videos=cached_videos,
+                                         amp_autocast=amp_autocast, pattern_to_video=pattern_to_video)
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
@@ -839,6 +854,93 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
     return metrics
 
+def validate_video(model, loader, loss_fn, args, cached_videos, pattern_to_video,  amp_autocast=suppress, log_suffix=''):
+    batch_time_m = AverageMeter()
+    losses_m = AverageMeter()
+    top1_m = AverageMeter()
+    top5_m = AverageMeter()
+
+    model.eval()
+
+    end = time.time()
+    last_idx = len(loader) - 1
+    
+    with torch.no_grad():
+        for batch_idx, (input, target) in enumerate(loader):
+            
+            print(len(input))
+
+
+            last_batch = batch_idx == last_idx
+            if not args.prefetcher:
+                input = input.cuda()
+                target = target.cuda()
+
+            if args.channels_last:
+                input = input.contiguous(memory_format=torch.channels_last)
+
+            with amp_autocast():
+                output = model(input)
+
+            if isinstance(output, (tuple, list)):
+                output = output[0]
+
+            # augmentation reduction
+            reduce_factor = args.tta
+            if reduce_factor > 1:
+                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                target = target[0:target.size(0):reduce_factor]
+
+            loss = loss_fn(output, target)
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+
+            if args.distributed:
+                reduced_loss = reduce_tensor(loss.data, args.world_size)
+                acc1 = reduce_tensor(acc1, args.world_size)
+                acc5 = reduce_tensor(acc5, args.world_size)
+            else:
+                reduced_loss = loss.data
+
+            torch.cuda.synchronize()
+
+            losses_m.update(reduced_loss.item(), input.size(0))
+            top1_m.update(acc1.item(), output.size(0))
+            top5_m.update(acc5.item(), output.size(0))
+
+            batch_time_m.update(time.time() - end)
+            end = time.time()
+
+            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
+                log_name = 'Test' + log_suffix
+                _logger.info(
+                    '{0}: [{1:>4d}/{2}]  '
+                    'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
+                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
+                    'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
+                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
+                        log_name, batch_idx, last_idx, batch_time=batch_time_m,
+                        loss=losses_m, top1=top1_m, top5=top5_m))
+
+    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+
+    return metrics
+
+def cache_video_frames(all_frames_path : str) -> Dict[str, Set[str]]:
+    if(os.path.isdir(all_frames_path)):
+        pattern_to_video =  dict()
+
+        all_frames = os.listdir(all_frames_path)
+        for f in all_frames:
+
+            f_index = f.rfind("F")
+
+            if(f_index != -1):
+                pattern = f[:f_index]
+                pattern_to_video[pattern].add(f)
+        return pattern_to_video
+    
+    return None
+            
 
 if __name__ == '__main__':
     main()
