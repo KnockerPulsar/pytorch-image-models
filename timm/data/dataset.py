@@ -36,10 +36,9 @@ class ImageDataset(data.Dataset):
 
     def __getitem__(self, index):
         img, target = self.parser[index]
-        img_path = img
 
         try:
-            img = img.read() if self.load_bytes else img
+            img = img.read() if self.load_bytes else Image.open(img).convert('RGB')
         except Exception as e:
             _logger.warning(f'Skipped sample (index {index}, file {self.parser.filename(index)}). {str(e)}')
             self._consecutive_errors += 1
@@ -52,7 +51,7 @@ class ImageDataset(data.Dataset):
             img = self.transform(img)
         if target is None:
             target = torch.tensor(-1, dtype=torch.long)
-        return img, target, img_path
+        return img, target
 
     def __len__(self):
         return len(self.parser)
