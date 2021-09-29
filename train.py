@@ -613,8 +613,9 @@ def main():
     saver = None
     output_dir = None
 
-    val_path = args.dataset+"val" if args.dataset[-1]==os.path.sep else args.dataset+os.path.sep+"val"
-    pattern_to_video = cache_video_frames(val_path)
+    # pattern_to_video = cache_video_frames(args.data_dir, "val")
+
+    # print(loader_eval.dataset.parser.samples)
 
     if args.rank == 0:
         if args.experiment:
@@ -704,7 +705,7 @@ def train_one_epoch(
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
-    for batch_idx, (input, target) in enumerate(loader):
+    for batch_idx, (input, target, _) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
@@ -802,7 +803,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
-        for batch_idx, (input, target) in enumerate(loader):
+        for batch_idx, (input, target,_) in enumerate(loader):
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input = input.cuda()
@@ -866,10 +867,10 @@ def validate_video(model, loader, loss_fn, args, cached_videos, pattern_to_video
     last_idx = len(loader) - 1
     
     with torch.no_grad():
-        for batch_idx, (input, target) in enumerate(loader):
+        for batch_idx, (input, target, img_path) in enumerate(loader):
             
-            print(len(input))
-
+            video = pattern_to_video[get_img_path_pattern(img_path)]
+            print(video)
 
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
@@ -925,22 +926,40 @@ def validate_video(model, loader, loss_fn, args, cached_videos, pattern_to_video
 
     return metrics
 
-def cache_video_frames(all_frames_path : str) -> Dict[str, Set[str]]:
-    if(os.path.isdir(all_frames_path)):
+# Root should be the folder containing the train and val subsets
+# subdir should be the subset you want to get the images of
+def cache_video_frames(root: str, subdir : str) -> Dict[str, Set[str]]:
+    subdir_path =  os.path.join(root, subdir)
+    if(os.path.isdir(root) and os.path.isdir(subdir_path)):
         pattern_to_video =  dict()
 
-        all_frames = os.listdir(all_frames_path)
-        for f in all_frames:
+        # The train or validation directories should have folders inside them 
+        # The folders are named with labels and contain pictures labeled with 
+        for folder in os.listdir(subdir_path):
+            sub_label_dir = os.path.join(subdir_path, folder)
+            all_frames = os.listdir(sub_label_dir)
+            for f in all_frames:
 
-            f_index = f.rfind("F")
+                f_index = f.rfind("F")
 
-            if(f_index != -1):
-                pattern = f[:f_index]
-                pattern_to_video[pattern].add(f)
+                if(f_index != -1):
+                    pattern = get_img_path_pattern(f)
+                    img_path = os.path.join(sub_label_dir, f)
+
+                    if not pattern in pattern_to_video:
+                        pattern_to_video[pattern] = set()
+
+                    pattern_to_video[pattern].add(img_path)
+
         return pattern_to_video
-    
     return None
-            
+    
+
+def get_img_path_pattern(img_path : str) -> str:
+    path_parts = os.path.split(img_path)
+    f_index = path_parts[1].rfind("F")
+    return path_parts[1][:f_index]
+
 
 if __name__ == '__main__':
     main()

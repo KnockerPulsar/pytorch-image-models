@@ -79,6 +79,8 @@ class PrefetchLoader:
         stream = torch.cuda.Stream()
         first = True
 
+        print(self.loader)
+
         for next_input, next_target in self.loader:
             with torch.cuda.stream(stream):
                 next_input = next_input.cuda(non_blocking=True)
