@@ -705,7 +705,7 @@ def train_one_epoch(
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
-    for batch_idx, (input, target, _) in enumerate(loader):
+    for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
@@ -803,7 +803,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
-        for batch_idx, (input, target,_) in enumerate(loader):
+        for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input = input.cuda()
@@ -867,11 +867,8 @@ def validate_video(model, loader, loss_fn, args, cached_videos, pattern_to_video
     last_idx = len(loader) - 1
     
     with torch.no_grad():
-        for batch_idx, (input, target, img_path) in enumerate(loader):
+        for batch_idx, (input, target) in enumerate(loader):
             
-            video = pattern_to_video[get_img_path_pattern(img_path)]
-            print(video)
-
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input = input.cuda()
