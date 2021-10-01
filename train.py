@@ -14,6 +14,8 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 """
+import PIL
+import re
 import argparse
 from genericpath import isdir
 import time
@@ -57,7 +59,7 @@ except AttributeError:
 try:
     import wandb
     has_wandb = True
-except ImportError: 
+except ImportError:
     has_wandb = False
 
 torch.backends.cudnn.benchmark = True
@@ -65,7 +67,8 @@ _logger = logging.getLogger('train')
 
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
-config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False)
+config_parser = parser = argparse.ArgumentParser(
+    description='Training Config', add_help=False)
 parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
                     help='YAML config file specifying default arguments')
 
@@ -292,10 +295,14 @@ parser.add_argument('--log-wandb', action='store_true', default=False,
 
 # Freezing arguments
 # Probably vit specific for now
-parser.add_argument('--frozen-head', type=bool, default=False, help="Whether to freeze the last layer or not (default: false)")
-parser.add_argument('--frozen-blocks', type=str, default='', help="Which blocks to freeze, a comma seperated list (with no spaces) of 1's and 0's. Where 1 is a frozen block and 0 is not. Note that if you pass it, make sure its length is the same as the number of blocks (default: '')")
-parser.add_argument('--acc-per-video', type=bool, default=False, help="Whether to calculate accuracy over a frame or over the whole video")
-
+parser.add_argument('--frozen-head', type=bool, default=False,
+                    help="Whether to freeze the last layer or not (default: false)")
+parser.add_argument('--frozen-blocks', type=str, default='',
+                    help="Which blocks to freeze, a comma seperated list (with no spaces) of 1's and 0's. Where 1 is a frozen block and 0 is not. Note that if you pass it, make sure its length is the same as the number of blocks (default: '')")
+parser.add_argument('--acc-per-video', type=bool, default=False,
+                    help="Whether to calculate accuracy over a frame or over the whole video")
+parser.add_argument("--batch-size-val", type=int, default=1,
+                    help = "How many videos to load into memory when using full video validation")
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -317,14 +324,14 @@ def _parse_args():
 def main():
     setup_default_logging()
     args, args_text = _parse_args()
-    
+
     if args.log_wandb:
         if has_wandb:
             wandb.init(project=args.experiment, config=args)
-        else: 
+        else:
             _logger.warning("You've requested to log metrics to wandb but package not found. "
                             "Metrics not being logged to wandb, try `pip install wandb`")
-             
+
     args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -335,7 +342,8 @@ def main():
     if args.distributed:
         args.device = 'cuda:%d' % args.local_rank
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        torch.distributed.init_process_group(
+            backend='nccl', init_method='env://')
         args.world_size = torch.distributed.get_world_size()
         args.rank = torch.distributed.get_rank()
         _logger.info('Training in distributed mode with multiple processes, 1 GPU per process. Process %d, total %d.'
@@ -382,11 +390,12 @@ def main():
     if args.frozen_blocks != '':
         split = args.frozen_blocks.split(",")
         if len(model.blocks) == len(split):
-            frozen = [ not bool(int(x)) for x in split]
+            frozen = [not bool(int(x)) for x in split]
             print(split)
             print(frozen)
-            for i,(frozen_block,block) in enumerate(zip(frozen,model.blocks)):
-                print(f'Status of all of block[{i}].requires_grad: {frozen_block}')
+            for i, (frozen_block, block) in enumerate(zip(frozen, model.blocks)):
+                print(
+                    f'Status of all of block[{i}].requires_grad: {frozen_block}')
                 for param in block.parameters():
                     param.requires_grad = frozen_block
         else:
@@ -400,14 +409,17 @@ def main():
         print("Classification head not frozen")
 
     if args.num_classes is None:
-        assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
-        args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
+        assert hasattr(
+            model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
+        # FIXME handle model default vs config num_classes more elegantly
+        args.num_classes = model.num_classes
 
     if args.local_rank == 0:
         _logger.info(
             f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
 
-    data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
+    data_config = resolve_data_config(
+        vars(args), model=model, verbose=args.local_rank == 0)
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
@@ -446,7 +458,7 @@ def main():
     optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
     optimizer.params = filter(lambda p: p.requires_grad, model.parameters())
-    
+
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
     loss_scaler = None
@@ -459,7 +471,8 @@ def main():
         amp_autocast = torch.cuda.amp.autocast
         loss_scaler = NativeScaler()
         if args.local_rank == 0:
-            _logger.info('Using native Torch AMP. Training in mixed precision.')
+            _logger.info(
+                'Using native Torch AMP. Training in mixed precision.')
     else:
         if args.local_rank == 0:
             _logger.info('AMP not enabled. Training in float32.')
@@ -492,7 +505,8 @@ def main():
         else:
             if args.local_rank == 0:
                 _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[args.local_rank])  # can use device str in Torch >= 1.1
+            # can use device str in Torch >= 1.1
+            model = NativeDDP(model, device_ids=[args.local_rank])
         # NOTE: EMA model does not need to be wrapped by DDP
 
     # setup learning rate schedule and starting epoch
@@ -527,7 +541,8 @@ def main():
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.num_classes)
         if args.prefetcher:
-            assert not num_aug_splits  # collate conflict (need to support deinterleaving in collate mixup)
+            # collate conflict (need to support deinterleaving in collate mixup)
+            assert not num_aug_splits
             collate_fn = FastCollateMixup(**mixup_args)
         else:
             mixup_fn = Mixup(**mixup_args)
@@ -587,7 +602,8 @@ def main():
     # setup loss function
     if args.jsd_loss:
         assert num_aug_splits > 1  # JSD only valid with aug splits set
-        train_loss_fn = JsdCrossEntropy(num_splits=num_aug_splits, smoothing=args.smoothing)
+        train_loss_fn = JsdCrossEntropy(
+            num_splits=num_aug_splits, smoothing=args.smoothing)
     elif mixup_active:
         # smoothing is handled with mixup target transform which outputs sparse, soft targets
         if args.bce_loss:
@@ -598,13 +614,12 @@ def main():
         if args.bce_loss:
             train_loss_fn = DenseBinaryCrossEntropy(smoothing=args.smoothing)
         else:
-            train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+            train_loss_fn = LabelSmoothingCrossEntropy(
+                smoothing=args.smoothing)
     else:
         train_loss_fn = nn.CrossEntropyLoss()
     train_loss_fn = train_loss_fn.cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
-
-
 
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
@@ -613,9 +628,8 @@ def main():
     saver = None
     output_dir = None
 
-    # pattern_to_video = cache_video_frames(args.data_dir, "val")
+    val_videos = get_subset_videos(args.data_dir, "val")
 
-    # print(loader_eval.dataset.parser.samples)
 
     if args.rank == 0:
         if args.experiment:
@@ -626,7 +640,8 @@ def main():
                 safe_model_name(args.model),
                 str(data_config['input_size'][-1])
             ])
-        output_dir = get_outdir(args.output if args.output else './output/train', exp_name)
+        output_dir = get_outdir(
+            args.output if args.output else './output/train', exp_name)
         decreasing = True if eval_metric == 'loss' else False
         saver = CheckpointSaver(
             model=model, optimizer=optimizer, args=args, model_ema=model_ema, amp_scaler=loss_scaler,
@@ -646,20 +661,20 @@ def main():
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                 if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
+                    _logger.info(
+                        "Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            if args.acc_per_video == False:
-                eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
-            else: 
-                # Given a frame's name up to the char F, it will return a cached result of the video's label
-                cached_videos = {} 
-                eval_metric = validate_video(model, loader_eval, validate_loss_fn, args, cached_videos=cached_videos,
-                                         amp_autocast=amp_autocast, pattern_to_video=pattern_to_video)
+            if not args.acc_per_video:
+                eval_metrics = validate(
+                    model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            else:
+                eval_metrics = validate_video(model, val_videos,args, validate_loss_fn, log_freq=1, amp_autocast=amp_autocast)
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
+                    distribute_bn(model_ema, args.world_size,
+                                  args.dist_bn == 'reduce')
                 ema_eval_metrics = validate(
                     model_ema.module, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
                 eval_metrics = ema_eval_metrics
@@ -670,18 +685,21 @@ def main():
 
             if output_dir is not None:
                 update_summary(
-                    epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
+                    epoch, train_metrics, eval_metrics, os.path.join(
+                        output_dir, 'summary.csv'),
                     write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb)
 
             if saver is not None:
                 # save proper checkpoint with eval metric
                 save_metric = eval_metrics[eval_metric]
-                best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
+                best_metric, best_epoch = saver.save_checkpoint(
+                    epoch, metric=save_metric)
 
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
-        _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
+        _logger.info(
+            '*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
 def train_one_epoch(
@@ -695,7 +713,8 @@ def train_one_epoch(
         elif mixup_fn is not None:
             mixup_fn.mixup_enabled = False
 
-    second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+    second_order = hasattr(
+        optimizer, 'is_second_order') and optimizer.is_second_order
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
@@ -727,13 +746,15 @@ def train_one_epoch(
             loss_scaler(
                 loss, optimizer,
                 clip_grad=args.clip_grad, clip_mode=args.clip_mode,
-                parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
+                parameters=model_parameters(
+                    model, exclude_head='agc' in args.clip_mode),
                 create_graph=second_order)
         else:
             loss.backward(create_graph=second_order)
             if args.clip_grad is not None:
                 dispatch_clip_grad(
-                    model_parameters(model, exclude_head='agc' in args.clip_mode),
+                    model_parameters(
+                        model, exclude_head='agc' in args.clip_mode),
                     value=args.clip_grad, mode=args.clip_mode)
             optimizer.step()
 
@@ -764,15 +785,18 @@ def train_one_epoch(
                         100. * batch_idx / last_idx,
                         loss=losses_m,
                         batch_time=batch_time_m,
-                        rate=input.size(0) * args.world_size / batch_time_m.val,
-                        rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
+                        rate=input.size(0) * args.world_size /
+                        batch_time_m.val,
+                        rate_avg=input.size(
+                            0) * args.world_size / batch_time_m.avg,
                         lr=lr,
                         data_time=data_time_m))
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(
                         input,
-                        os.path.join(output_dir, 'train-batch-%d.jpg' % batch_idx),
+                        os.path.join(
+                            output_dir, 'train-batch-%d.jpg' % batch_idx),
                         padding=0,
                         normalize=True)
 
@@ -781,7 +805,8 @@ def train_one_epoch(
             saver.save_recovery(epoch, batch_idx=batch_idx)
 
         if lr_scheduler is not None:
-            lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
+            lr_scheduler.step_update(
+                num_updates=num_updates, metric=losses_m.avg)
 
         end = time.time()
         # end for
@@ -805,12 +830,16 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
+            print(input[0])
+            print("========")
+            print(target[0])
+            exit()
             if not args.prefetcher:
                 input = input.cuda()
                 target = target.cuda()
             if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
-
+            print(type(input))
             with amp_autocast():
                 output = model(input)
             if isinstance(output, (tuple, list)):
@@ -819,7 +848,8 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
             # augmentation reduction
             reduce_factor = args.tta
             if reduce_factor > 1:
-                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                output = output.unfold(
+                    0, reduce_factor, reduce_factor).mean(dim=2)
                 target = target[0:target.size(0):reduce_factor]
 
             loss = loss_fn(output, target)
@@ -851,87 +881,23 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                         log_name, batch_idx, last_idx, batch_time=batch_time_m,
                         loss=losses_m, top1=top1_m, top5=top5_m))
 
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
-
-    return metrics
-
-def validate_video(model, loader, loss_fn, args, cached_videos, pattern_to_video,  amp_autocast=suppress, log_suffix=''):
-    batch_time_m = AverageMeter()
-    losses_m = AverageMeter()
-    top1_m = AverageMeter()
-    top5_m = AverageMeter()
-
-    model.eval()
-
-    end = time.time()
-    last_idx = len(loader) - 1
-    
-    with torch.no_grad():
-        for batch_idx, (input, target) in enumerate(loader):
-            
-            last_batch = batch_idx == last_idx
-            if not args.prefetcher:
-                input = input.cuda()
-                target = target.cuda()
-
-            if args.channels_last:
-                input = input.contiguous(memory_format=torch.channels_last)
-
-            with amp_autocast():
-                output = model(input)
-
-            if isinstance(output, (tuple, list)):
-                output = output[0]
-
-            # augmentation reduction
-            reduce_factor = args.tta
-            if reduce_factor > 1:
-                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                target = target[0:target.size(0):reduce_factor]
-
-            loss = loss_fn(output, target)
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-
-            if args.distributed:
-                reduced_loss = reduce_tensor(loss.data, args.world_size)
-                acc1 = reduce_tensor(acc1, args.world_size)
-                acc5 = reduce_tensor(acc5, args.world_size)
-            else:
-                reduced_loss = loss.data
-
-            torch.cuda.synchronize()
-
-            losses_m.update(reduced_loss.item(), input.size(0))
-            top1_m.update(acc1.item(), output.size(0))
-            top5_m.update(acc5.item(), output.size(0))
-
-            batch_time_m.update(time.time() - end)
-            end = time.time()
-
-            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
-                log_name = 'Test' + log_suffix
-                _logger.info(
-                    '{0}: [{1:>4d}/{2}]  '
-                    'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                    'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
-                        log_name, batch_idx, last_idx, batch_time=batch_time_m,
-                        loss=losses_m, top1=top1_m, top5=top5_m))
-
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+    metrics = OrderedDict(
+        [('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
 
     return metrics
 
 # Root should be the folder containing the train and val subsets
 # subdir should be the subset you want to get the images of
-def cache_video_frames(root: str, subdir : str) -> Dict[str, Set[str]]:
-    subdir_path =  os.path.join(root, subdir)
-    if(os.path.isdir(root) and os.path.isdir(subdir_path)):
-        pattern_to_video =  dict()
 
-        # The train or validation directories should have folders inside them 
-        # The folders are named with labels and contain pictures labeled with 
+
+def get_subset_videos(root: str, subdir: str) -> List[List[str]]:
+    subdir_path = os.path.join(root, subdir)
+    if(os.path.isdir(root) and os.path.isdir(subdir_path)):
+        pattern_to_video = dict()
+
+        # The train or validation directories should have folders inside them,
+        # similar to how Imagenet structures its data.
+        # The folders are named with labels and contain images that (mostly) follow that label
         for folder in os.listdir(subdir_path):
             sub_label_dir = os.path.join(subdir_path, folder)
             all_frames = os.listdir(sub_label_dir)
@@ -947,16 +913,132 @@ def cache_video_frames(root: str, subdir : str) -> Dict[str, Set[str]]:
                         pattern_to_video[pattern] = set()
 
                     pattern_to_video[pattern].add(img_path)
-
-        return pattern_to_video
+        print(pattern_to_video)
+        return [list(pattern_to_video[pat]) for pat in pattern_to_video ]
     return None
-    
 
-def get_img_path_pattern(img_path : str) -> str:
+
+def get_img_path_pattern(img_path: str) -> str:
     path_parts = os.path.split(img_path)
     f_index = path_parts[1].rfind("F")
     return path_parts[1][:f_index]
 
+def get_img_label(img_path: str) -> int:
+    pattern = r"ACT(.+?)F"
+    split = os.path.split(img_path) 
+    if len(split) > 1:
+        img_path = split[-1]
+    match = re.search(pattern, img_path)
+    # print(img_path)
+    # print(match.group(1))
+    return int(match.group(1))
+
+import numpy as np
+def calc_acc_over_vid(model_outputs, frame_label):
+    # model_output should be an array where each element
+    # is another array carrying predictions for every class
+    
+    # First: we loop over every output and get the argmax
+    model_outputs = model_outputs.cpu()
+    preds = [np.argmax(output_i) for output_i in model_outputs]
+
+    final_pred = np.argmax(np.bincount(preds))
+    print(f"Majority prediction {final_pred}, real label {frame_label}")
+    return torch.tensor(int(final_pred == frame_label))
+
+
+# Given a list of video frames for each video, loads them and gets the prediction for them
+# Then checks for the most frequently appearing prediction and sets that as the final prediction
+
+from torchvision import transforms
+def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autocast=suppress, log_suffix='', log_freq : int = 1):
+    batch_time_m = AverageMeter()
+    losses_m = AverageMeter()
+    top1_m = AverageMeter()
+
+    model.eval()
+
+    end = time.time()
+    trns = transforms.Compose(
+        [
+            transforms.Resize((224,224)),
+            transforms.ToTensor()
+        ]
+    )
+
+    num_vids_per_batch = args.batch_size_val
+
+    for loaded_vids in range(0,len(val_videos),num_vids_per_batch):
+
+        videos = val_videos[loaded_vids : min(loaded_vids+4, len(val_videos))]
+        loaded = []
+        print("Preparing frames for validation videos")
+        for video in videos:
+            imgs = []
+
+            target = get_img_label(video[0])-1
+            target = torch.tensor(target)
+
+            for frame in video:
+                imgs.append(
+                    trns(PIL.Image.open(frame).convert('RGB')).half()
+                    )
+            loaded.append((imgs,target))
+        
+        for vid_num, (imgs, target) in enumerate(loaded):
+            with torch.no_grad():
+                print("Passing videos to model")
+                target = [target]*len(imgs)
+                target = torch.stack(target)
+                imgs = torch.stack(imgs)
+                imgs = imgs.cuda()
+                target = target.cuda()
+
+                if args.channels_last:
+                    imgs = imgs.contiguous(memory_format=torch.channels_last)
+
+                with amp_autocast():
+                    output = model(imgs)
+                if isinstance(output, (tuple, list)):
+                    output = output[0]
+
+                # augmentation reduction
+                reduce_factor = args.tta
+                if reduce_factor > 1:
+                    output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                    target = target[0:target.size(0):reduce_factor]
+
+                print("Calculating loss and accuaracy")
+                loss = loss_fn(output, target)
+                acc1= calc_acc_over_vid(output, target[0])
+
+                if args.distributed:
+                    reduced_loss = reduce_tensor(loss.data, args.world_size)
+                    acc1 = reduce_tensor(acc1, args.world_size)
+                else:
+                    reduced_loss = loss.data
+
+                torch.cuda.synchronize()
+
+                losses_m.update(reduced_loss.item(), imgs.size(0))
+                top1_m.update(acc1.item(), output.size(0))
+
+                batch_time_m.update(time.time() - end)
+                end = time.time()
+                if args.local_rank == 0 and (vid_num == len(videos) or vid_num % log_freq == 0):
+                    log_name = 'Test' + log_suffix
+                    _logger.info(
+                        '{0}: [{1:>4d}/{2}]  '
+                        'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
+                        'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
+                        'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '.format(
+                            log_name, vid_num, len(videos), batch_time=batch_time_m,
+                            loss=losses_m, top1=top1_m))
+
+    metrics = OrderedDict(
+        [('loss', losses_m.avg), ('top1', top1_m.avg)])
+
+    return metrics
 
 if __name__ == '__main__':
     main()
