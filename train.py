@@ -830,10 +830,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
-            print(input[0])
-            print("========")
-            print(target[0])
-            exit()
+
             if not args.prefetcher:
                 input = input.cuda()
                 target = target.cuda()
@@ -913,7 +910,6 @@ def get_subset_videos(root: str, subdir: str) -> List[List[str]]:
                         pattern_to_video[pattern] = set()
 
                     pattern_to_video[pattern].add(img_path)
-        print(pattern_to_video)
         return [list(pattern_to_video[pat]) for pat in pattern_to_video ]
     return None
 
@@ -940,7 +936,11 @@ def calc_acc_over_vid(model_outputs, frame_label):
     
     # First: we loop over every output and get the argmax
     model_outputs = model_outputs.cpu()
-    preds = [np.argmax(output_i) for output_i in model_outputs]
+
+    preds = [np.argmax(output_i) for output_i in model_outputs.tolist()]
+
+    print(f"Frame predictions: {preds}")
+    print(f"Real label: {frame_label}")
 
     final_pred = np.argmax(np.bincount(preds))
     print(f"Majority prediction {final_pred}, real label {frame_label}")
@@ -972,7 +972,7 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
 
         videos = val_videos[loaded_vids : min(loaded_vids+4, len(val_videos))]
         loaded = []
-        print("Preparing frames for validation videos")
+        # print("Preparing frames for validation videos")
         for video in videos:
             imgs = []
 
@@ -987,7 +987,7 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
         
         for vid_num, (imgs, target) in enumerate(loaded):
             with torch.no_grad():
-                print("Passing videos to model")
+                # print("Passing videos to model")
                 target = [target]*len(imgs)
                 target = torch.stack(target)
                 imgs = torch.stack(imgs)
@@ -1008,7 +1008,7 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
                     output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                     target = target[0:target.size(0):reduce_factor]
 
-                print("Calculating loss and accuaracy")
+                # print("Calculating loss and accuaracy")
                 loss = loss_fn(output, target)
                 acc1= calc_acc_over_vid(output, target[0])
 
