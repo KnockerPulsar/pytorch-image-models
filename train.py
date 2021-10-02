@@ -968,9 +968,11 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
 
     num_vids_per_batch = args.batch_size_val
 
+    curr_vid = 0
+
     for loaded_vids in range(0,len(val_videos),num_vids_per_batch):
 
-        videos = val_videos[loaded_vids : min(loaded_vids+4, len(val_videos))]
+        videos = val_videos[loaded_vids : min(loaded_vids+num_vids_per_batch, len(val_videos))]
         loaded = []
         # print("Preparing frames for validation videos")
         for video in videos:
@@ -1032,9 +1034,10 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
                         'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                         'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '.format(
-                            log_name, vid_num, len(videos), batch_time=batch_time_m,
+                            log_name, curr_vid, len(val_videos), batch_time=batch_time_m,
                             loss=losses_m, top1=top1_m))
-
+                curr_vid +=1
+                
     metrics = OrderedDict(
         [('loss', losses_m.avg), ('top1', top1_m.avg)])
 
