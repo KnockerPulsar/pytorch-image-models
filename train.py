@@ -62,6 +62,12 @@ try:
 except ImportError:
     has_wandb = False
 
+
+import numpy as np
+from torchvision import transforms
+import pickle
+
+
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
 
@@ -669,7 +675,7 @@ def main():
                 eval_metrics = validate(
                     model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
             else:
-                eval_metrics = validate_video(model, val_videos,args, validate_loss_fn, log_freq=1, amp_autocast=amp_autocast)
+                eval_metrics = validate_video(model, val_videos,args, validate_loss_fn, epoch, log_freq=1, amp_autocast=amp_autocast)
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
@@ -929,32 +935,65 @@ def get_img_label(img_path: str) -> int:
     # print(match.group(1))
     return int(match.group(1))
 
-import numpy as np
-def calc_acc_over_vid(model_outputs, frame_label):
+def calc_acc_over_vid(model_outputs, frame_label,frame_pattern,epochs_preds, topk = 2):
     # model_output should be an array where each element
     # is another array carrying predictions for every class
-    
-    # First: we loop over every output and get the argmax
+
+    print(f"INFO: Using top {topk} predictions")
+
+    # Move the outputs from the GPU to CPU
     model_outputs = model_outputs.cpu()
 
-    preds = [np.argmax(output_i) for output_i in model_outputs.tolist()]
+    # Convert the outputs from Tensors to Lists
+    # model_outputs = [[frame1 predictions], [frame 2 predictions], ....]
+    output_list = model_outputs.tolist()
 
-    print(f"Frame predictions: {preds}")
-    print(f"Real label: {frame_label}")
+    # Sort and store the topk prediction labels
+    top_labels_per_frame = [np.argpartition(output_i, -topk)[-topk:] for output_i in output_list]
 
-    final_pred = np.argmax(np.bincount(preds))
-    print(f"Majority prediction {final_pred}, real label {frame_label}")
-    return torch.tensor(int(final_pred == frame_label))
+    # For each prediction in topk: store labels for each frame in a seperate array
+    # preds_split = [[top 1 frame predictions for each frame], [top 2...], ...]
+    top_i_preds_per_frame = [[top_labels_per_frame[j][i] for j in range(len(top_labels_per_frame))] for i in range(topk)]
+
+    # Get the most frequently occuring prediction for each frame
+    # if top_i_preds_per_frame = [[3,5,3,6,7,1,1,2,0,3], [1,1,2,3,4,5,5,6,7,7,7]]
+    # top_k_labels = [3,7]
+    top_k_labels = [np.argmax(np.bincount(pred)) for pred in top_i_preds_per_frame]
+
+    # Get the value of these predictions
+    top_k_preds = [[model_outputs[frame][pred].item() for pred in top_k_labels] for frame in range(len(model_outputs))]
+
+    # Make a tuple of each label and its prediction for pickling
+    # epochs_preds[frame_label] = [(fp, pv) for (fp,pv) in zip(top_k_labels,top_k_preds)]
+    top_k_labels_preds = [[(label, pred) for label,pred in zip(top_frame_labels,top_frame_preds)] for top_frame_labels,top_frame_preds in zip(top_labels_per_frame, top_k_preds)]
+
+    print(top_k_labels_preds)
+    epochs_preds[frame_pattern]= top_k_labels_preds
+
+
+    # print(f"topk prediction values: {top_k_preds}")
+    # print(f"Majority predictions {top_k_labels}, real label {frame_label}")
+
+
+    top1 = 1 if top_k_labels[0] == frame_label else 0
+    topk = 0
+    for f_pred in top_k_labels:
+        if f_pred == frame_label:
+            topk = 1
+            break
+    
+    return torch.tensor(top1), torch.tensor(topk)
+
 
 
 # Given a list of video frames for each video, loads them and gets the prediction for them
 # Then checks for the most frequently appearing prediction and sets that as the final prediction
 
-from torchvision import transforms
-def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autocast=suppress, log_suffix='', log_freq : int = 1):
+def validate_video(model, val_videos: List[List[str]], args, loss_fn, epoch_num ,amp_autocast=suppress, log_suffix='', log_freq : int = 1, topk =2 ):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
+    topk_m = AverageMeter()
 
     model.eval()
 
@@ -967,6 +1006,9 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
     )
 
     num_vids_per_batch = args.batch_size_val
+
+    # Stores the labels and predictions for each video in this epoch
+    epoch_vids_labels_preds = {}
 
     curr_vid = 0
 
@@ -1012,11 +1054,17 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
 
                 # print("Calculating loss and accuaracy")
                 loss = loss_fn(output, target)
-                acc1= calc_acc_over_vid(output, target[0])
+                print(videos[vid_num][0])
+                vid_pattern = get_img_path_pattern(videos[vid_num][0])
+                print(vid_pattern)
+                acc1 , acck = calc_acc_over_vid(output, target[0].item(),vid_pattern ,epoch_vids_labels_preds )
+
+
 
                 if args.distributed:
                     reduced_loss = reduce_tensor(loss.data, args.world_size)
                     acc1 = reduce_tensor(acc1, args.world_size)
+                    acck = reduce_tensor(acck, args.world_size)
                 else:
                     reduced_loss = loss.data
 
@@ -1024,6 +1072,7 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
 
                 losses_m.update(reduced_loss.item(), imgs.size(0))
                 top1_m.update(acc1.item(), output.size(0))
+                topk_m.update(acck.item(), output.size(0))
 
                 batch_time_m.update(time.time() - end)
                 end = time.time()
@@ -1033,14 +1082,19 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, amp_autoca
                         '{0}: [{1:>4d}/{2}]  '
                         'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                         'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                        'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '.format(
+                        'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
+                        'Acc@{topk}: {topk_m.val:>7.4f} ({topk_m.avg:>7.4f})  '.format(
                             log_name, curr_vid, len(val_videos), batch_time=batch_time_m,
-                            loss=losses_m, top1=top1_m))
+                            loss=losses_m, top1=top1_m, topk_m=topk_m,topk = topk ))
                 curr_vid +=1
                 
     metrics = OrderedDict(
         [('loss', losses_m.avg), ('top1', top1_m.avg)])
 
+    # Dump the labels and prediction for each video for this epoch.
+    epoch_val_labels_preds_file = open(f"epoch{epoch_num}_top{topk}_labels_preds.p", "wb")
+    print(f"Writing epoch {epoch_num}'s validation dataset top{topk} labels and predictions into {epoch_val_labels_preds_file.name}")
+    pickle.dump(epoch_vids_labels_preds, epoch_val_labels_preds_file)
     return metrics
 
 if __name__ == '__main__':
