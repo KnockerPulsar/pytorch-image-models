@@ -842,7 +842,6 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 target = target.cuda()
             if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
-            print(type(input))
             with amp_autocast():
                 output = model(input)
             if isinstance(output, (tuple, list)):
@@ -967,7 +966,7 @@ def calc_acc_over_vid(model_outputs, frame_label,frame_pattern,epochs_preds, top
     # epochs_preds[frame_label] = [(fp, pv) for (fp,pv) in zip(top_k_labels,top_k_preds)]
     top_k_labels_preds = [[(label, pred) for label,pred in zip(top_frame_labels,top_frame_preds)] for top_frame_labels,top_frame_preds in zip(top_labels_per_frame, top_k_preds)]
 
-    print(top_k_labels_preds)
+    # print(top_k_labels_preds)
     epochs_preds[frame_pattern]= top_k_labels_preds
 
 
@@ -981,7 +980,10 @@ def calc_acc_over_vid(model_outputs, frame_label,frame_pattern,epochs_preds, top
         if f_pred == frame_label:
             topk = 1
             break
-    
+
+    print(f"Topk labels: {top_k_labels}")
+    print(f"Real label: {frame_label}")
+
     return torch.tensor(top1), torch.tensor(topk)
 
 
@@ -1054,9 +1056,9 @@ def validate_video(model, val_videos: List[List[str]], args, loss_fn, epoch_num 
 
                 # print("Calculating loss and accuaracy")
                 loss = loss_fn(output, target)
-                print(videos[vid_num][0])
+                # print(videos[vid_num][0])
                 vid_pattern = get_img_path_pattern(videos[vid_num][0])
-                print(vid_pattern)
+                # print(vid_pattern)
                 acc1 , acck = calc_acc_over_vid(output, target[0].item(),vid_pattern ,epoch_vids_labels_preds )
 
 
